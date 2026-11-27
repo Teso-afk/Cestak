@@ -62,7 +62,17 @@ function duration(t) {
 }
 function routeText(t) { return (t.from || '').trim(); }
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 2200); }
-function tripsOf(mk) { return db.trips.filter(t => t.date.startsWith(mk)).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time)); }
+// db.trips obsahuje cesty i dny volna; volno má navíc `kind` a do výkazu se netiskne
+const KINDS = {
+  sick: { label: '60% volno', sub: 'sick day', short: '60 %', mark: 'S' },
+  vac: { label: 'Dovolená', sub: '', short: 'Dov.', mark: 'D' },
+  doc: { label: 'Propustka', sub: 'lékař', short: 'Prop.', mark: 'P' },
+};
+const isTrip = t => !t.kind;
+function plural(n, one, few, many) { return n === 1 ? one : n >= 2 && n <= 4 ? few : many; }
+const daysWord = n => plural(n, 'den', 'dny', 'dní');
+function entriesOf(mk) { return db.trips.filter(t => t.date.startsWith(mk)).sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || ''))); }
+function tripsOf(mk) { return entriesOf(mk).filter(isTrip); }
 function shortDate(iso) { const d = parseDate(iso); return d.getDate() + '. ' + (d.getMonth() + 1) + '.'; }
 function longDate(iso) { const d = parseDate(iso); return WD_LONG[d.getDay()] + ' ' + shortDate(iso) + ' ' + d.getFullYear(); }
 // jiná cesta zapsaná na stejný den (každý den smí být v seznamu jen jednou)
@@ -97,28 +107,31 @@ function holidayName(iso) { return holidays(+iso.slice(0, 4))[iso] || ''; }
 function isOffDay(iso) { const wd = parseDate(iso).getDay(); return wd === 0 || wd === 6 || !!holidayName(iso); }
 
 /* ---------- kalendář ---------- */
-// zapsané dny = zeleně, víkendy a státní svátky = červeně, dnešek = modrý rámeček, vybraný den = plná modrá
+// cesty = zeleně, volno = barva podle typu + písmeno, víkendy a svátky = červeně,
+// dnešek = modrý rámeček, vybraný den = plná modrá
 function calendarHtml(mk, { selected = '', exceptId = '' } = {}) {
   const [y, m] = mk.split('-').map(Number);
   const lead = (new Date(y, m - 1, 1).getDay() + 6) % 7, days = new Date(y, m, 0).getDate();
-  const taken = new Set(db.trips.filter(t => t.id !== exceptId).map(t => t.date));
+  const taken = new Map(db.trips.filter(t => t.id !== exceptId).map(t => [t.date, t.kind || '']));
   const today = isoDate(new Date());
   let h = '<div class="cal">' + ['po', 'út', 'st', 'čt', 'pá', 'so', 'ne'].map((d, i) => `<div class="cal-h${i > 4 ? ' off' : ''}">${d}</div>`).join('');
   for (let i = 0; i < lead; i++) h += '<div></div>';
   for (let d = 1; d <= days; d++) {
     const iso = mk + '-' + pad(d), cls = ['cal-d'], hn = holidayName(iso);
+    const kind = taken.get(iso), k = KINDS[kind];
     if (isOffDay(iso)) cls.push('off');
-    if (taken.has(iso)) cls.push('rec');
+    if (kind === '') cls.push('rec');
+    if (k) cls.push('k-' + kind);
     if (iso === today) cls.push('today');
     if (iso === selected) cls.push('sel');
-    const tip = [taken.has(iso) ? 'zapsáno' : '', hn].filter(Boolean).join(' · ');
-    h += `<button type="button" class="${cls.join(' ')}" data-day="${iso}"${tip ? ` title="${esc(tip)}"` : ''}>${d}</button>`;
+    const tip = [kind === '' ? 'cesta' : k ? k.label : '', hn].filter(Boolean).join(' · ');
+    h += `<button type="button" class="${cls.join(' ')}" data-day="${iso}"${k ? ` data-mark="${k.mark}"` : ''}${tip ? ` title="${esc(tip)}"` : ''}>${d}</button>`;
   }
   return h + '</div>';
 }
 function calendarLegend(mk) {
   const hs = Object.entries(holidays(+mk.slice(0, 4))).filter(([d]) => d.startsWith(mk)).sort(([a], [b]) => a.localeCompare(b));
-  return `<div class="cal-legend"><span><i class="rec"></i>zapsáno</span><span><i class="off"></i>víkend / státní svátek</span></div>`
+  return `<div class="cal-legend"><span><i class="rec"></i>cesta</span>${Object.entries(KINDS).map(([k, v]) => `<span><i class="k-${k}"></i>${v.label}</span>`).join('')}<span><i class="off"></i>víkend / svátek</span></div>`
     + (hs.length ? `<div class="hint">${hs.map(([d, n]) => `${shortDate(d)} ${esc(n)}`).join(' · ')}</div>` : '');
 }
 
@@ -128,19 +141,21 @@ document.querySelectorAll('nav.tabs button').forEach(b => b.onclick = () => show
 function showTab(t) {
   tab = t;
   document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
-  ['list', 'form', 'settings'].forEach(x => $('#tab-' + x).hidden = x !== t);
+  ['list', 'year', 'form', 'settings'].forEach(x => $('#tab-' + x).hidden = x !== t);
   $('#fab').style.display = t === 'list' ? '' : 'none';
   $('header.top .monthnav').style.visibility = t === 'settings' ? 'hidden' : '';
   render();
   window.scrollTo(0, 0);
 }
-$('#mPrev').onclick = () => { viewMonth = shiftMonth(viewMonth, -1); render(); };
-$('#mNext').onclick = () => { viewMonth = shiftMonth(viewMonth, 1); render(); };
+// v Přehledu šipky listují po rocích
+$('#mPrev').onclick = () => { viewMonth = shiftMonth(viewMonth, tab === 'year' ? -12 : -1); render(); };
+$('#mNext').onclick = () => { viewMonth = shiftMonth(viewMonth, tab === 'year' ? 12 : 1); render(); };
 $('#fab').onclick = () => openEdit(null);
 
 function render() {
-  $('#mLabel').textContent = monthLabel(viewMonth);
+  $('#mLabel').textContent = tab === 'year' ? 'rok ' + viewMonth.slice(0, 4) : monthLabel(viewMonth);
   if (tab === 'list') renderList();
+  if (tab === 'year') renderYear();
   if (tab === 'form') renderFormTab();
   if (tab === 'settings') renderSettings();
 }
@@ -154,10 +169,10 @@ function todayMissing() {
 }
 function renderList() {
   const el = $('#tab-list');
-  const list = tripsOf(viewMonth);
+  const list = entriesOf(viewMonth);
   let h = '';
   if (todayMissing() && viewMonth === monthKey(new Date())) {
-    h += `<div class="banner"><p><b>Dnes ještě nemáš zápis.</b><br><span class="hint" style="margin:0">Jel jsi dnes služebně?</span></p>
+    h += `<div class="banner"><p><b>Dnes ještě nemáš zápis.</b><br><span class="hint" style="margin:0">Jel jsi dnes služebně, nebo máš volno?</span></p>
       <button class="btn" id="bAdd">Zapsat</button><button class="btn sec" id="bSkip">Ne</button></div>`;
   }
   if (!S().name) h += `<div class="banner"><p>Nejdřív si v <b>Nastavení</b> vyplň jméno, osobní číslo a odbor. Předvyplní se do hlavičky.</p></div>`;
@@ -166,13 +181,16 @@ function renderList() {
   for (const t of list) { if (seen.has(t.date)) dup.add(t.date); seen.add(t.date); }
   if (dup.size) h += `<div class="banner warn"><p><b>Den ${[...dup].map(shortDate).join(', ')} je zapsaný vícekrát.</b><br>Každý den může být v seznamu jen jednou. Jeden ze záznamů smaž, nebo mu změň datum.</p></div>`;
   h += `<div class="card">${calendarHtml(viewMonth)}${calendarLegend(viewMonth)}</div>`;
-  const pages = Math.max(1, Math.ceil(list.length / 15));
-  h += `<div class="count">${list.length} ${list.length === 1 ? 'cesta' : list.length >= 2 && list.length <= 4 ? 'cesty' : 'cest'} · ${pages} ${pages === 1 ? 'list' : 'listy'} formuláře</div>`;
-  if (!list.length) h += `<div class="card empty">V tomto měsíci zatím nic.<br>Přidej cestu tlačítkem +.</div>`;
+  const nTrips = list.filter(isTrip).length, nOff = list.length - nTrips;
+  const pages = Math.max(1, Math.ceil(nTrips / ROWS));
+  h += `<div class="count">${nTrips} ${plural(nTrips, 'cesta', 'cesty', 'cest')} · ${pages} ${plural(pages, 'list', 'listy', 'listů')} formuláře${nOff ? ` · ${nOff} ${daysWord(nOff)} volna` : ''}</div>`;
+  if (!list.length) h += `<div class="card empty">V tomto měsíci zatím nic.<br>Přidej cestu nebo volno tlačítkem +.</div>`;
   for (const t of list) {
-    const d = parseDate(t.date);
-    h += `<div class="card trip${dup.has(t.date) ? ' dup' : ''}" data-id="${t.id}"><div class="d">${d.getDate()}.${d.getMonth() + 1}.<small>${WD[d.getDay()]}</small></div>
-      <div class="b"><b>${esc(t.misto || '—')}</b><div>${esc(t.ucel || '')}</div><div>${esc([routeText(t), duration(t), t.doprava].filter(Boolean).join(' · '))}</div></div></div>`;
+    const d = parseDate(t.date), k = KINDS[t.kind];
+    const cls = 'card trip' + (dup.has(t.date) ? ' dup' : '') + (k ? ' k-' + t.kind : '');
+    const body = k ? `<b>${k.label}</b><div>${[k.sub, 'nepíše se do výkazu'].filter(Boolean).join(' · ')}</div>`
+      : `<b>${esc(t.misto || '—')}</b><div>${esc(t.ucel || '')}</div><div>${esc([routeText(t), duration(t), t.doprava].filter(Boolean).join(' · '))}</div>`;
+    h += `<div class="${cls}" data-id="${t.id}"><div class="d">${d.getDate()}.${d.getMonth() + 1}.<small>${WD[d.getDay()]}</small></div><div class="b">${body}</div></div>`;
   }
   el.innerHTML = h;
   el.querySelectorAll('.trip').forEach(c => c.onclick = () => openEdit(db.trips.find(t => t.id === c.dataset.id)));
@@ -182,19 +200,45 @@ function renderList() {
   const bs = $('#bSkip'); if (bs) bs.onclick = () => { db.skipped.push(isoDate(new Date())); db.skipped = db.skipped.slice(-60); save(); render(); };
 }
 
+/* ---------- přehled roku ---------- */
+function renderYear() {
+  const y = viewMonth.slice(0, 4), el = $('#tab-year'), ks = Object.keys(KINDS), nowMk = monthKey(new Date());
+  const rows = MONTHS.map((name, i) => {
+    const mk = y + '-' + pad(i + 1), es = entriesOf(mk), r = { mk, name, trip: es.filter(isTrip).length };
+    for (const k of ks) r[k] = es.filter(t => t.kind === k).length;
+    return r;
+  });
+  const sum = k => rows.reduce((a, r) => a + r[k], 0);
+  const off = ks.reduce((a, k) => a + sum(k), 0), trips = sum('trip');
+  const cell = n => n || '<span class="zero">–</span>';
+  el.innerHTML = `
+  <div class="stats">${ks.map(k => `<div class="stat k-${k}"><b>${sum(k)}</b><span>${KINDS[k].label}</span><small>${daysWord(sum(k))}${KINDS[k].sub ? ' · ' + KINDS[k].sub : ''}</small></div>`).join('')}</div>
+  <div class="count">Rok ${y}: ${off} ${daysWord(off)} volna celkem · ${trips} ${plural(trips, 'pracovní cesta', 'pracovní cesty', 'pracovních cest')}</div>
+  <div class="card"><table class="ytable">
+    <thead><tr><th>Měsíc</th><th>Cesty</th>${ks.map(k => `<th class="k-${k}">${KINDS[k].short}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(r => `<tr data-mk="${r.mk}"${r.mk === nowMk ? ' class="now"' : ''}><td>${r.name}</td><td>${cell(r.trip)}</td>${ks.map(k => `<td>${cell(r[k])}</td>`).join('')}</tr>`).join('')}</tbody>
+    <tfoot><tr><td>Celkem</td><td>${trips}</td>${ks.map(k => `<td>${sum(k)}</td>`).join('')}</tr></tfoot>
+  </table></div>
+  <div class="hint">Volno se do výkazu cest netiskne. Ťukni na měsíc a otevře se jeho seznam.</div>`;
+  el.querySelectorAll('tr[data-mk]').forEach(tr => tr.onclick = () => { viewMonth = tr.dataset.mk; showTab('list'); });
+}
+
 /* ---------- edit sheet ---------- */
-function lastTrip() { return [...db.trips].sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time))[0]; }
+function lastTrip() { return db.trips.filter(isTrip).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time))[0]; }
 function suggestions(field) {
   const m = new Map();
   for (const t of db.trips) { const v = (t[field] || '').trim(); if (v) m.set(v, (m.get(v) || 0) + 1); }
   return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 30).map(x => x[0]);
 }
-function newTrip(preset) {
+function tripDefaults() {
   const s = S();
+  return { time: s.defTime, end: s.defEnd, from: s.origin, to: s.origin, misto: '', ucel: '', spolu: s.defSpolu, doba: s.defDoba, doprava: s.defTransport, zaloha: '', schvaluje: s.defSchvaluje };
+}
+function newTrip(preset) {
   let date = preset || isoDate(new Date());
   if (!date.startsWith(viewMonth)) date = viewMonth + '-01';
   if (tripOnDate(date)) date = ''; // den už je zapsaný → nechat vybrat v kalendáři
-  return { id: uid(), date, time: s.defTime, end: s.defEnd, from: s.origin, to: s.origin, misto: '', ucel: '', spolu: s.defSpolu, doba: s.defDoba, doprava: s.defTransport, zaloha: '', schvaluje: s.defSchvaluje };
+  return { id: uid(), date, ...tripDefaults() };
 }
 const FIELDS = [
   ['misto', 'Místo pracovního výkonu'], ['ucel', 'Účel cesty'], ['spolu', 'Spolucestující'],
@@ -215,7 +259,8 @@ function pickDay(iso) {
 }
 function openEdit(trip, presetDate) {
   const isNew = !trip;
-  editing = isNew ? newTrip(presetDate) : { ...trip };
+  // výchozí hodnoty cesty i pod volnem, aby po přepnutí volna na cestu byla pole předvyplněná
+  editing = isNew ? newTrip(presetDate) : { ...tripDefaults(), ...trip };
   pickMonth = editing.date ? editing.date.slice(0, 7) : viewMonth;
   const sh = $('#editSheet');
   const chips = [];
@@ -224,13 +269,16 @@ function openEdit(trip, presetDate) {
   db.templates.forEach((tp, i) => chips.push(`<button class="chip" data-tpl="${i}">${esc(tp.label)}</button>`));
   const dl = f => `<datalist id="dl-${f}">${suggestions(f).map(v => `<option value="${esc(v)}">`).join('')}</datalist>`;
   sh.innerHTML = `
-  <header><button data-act="close">Zrušit</button><h2 style="text-align:center">${isNew ? 'Nová cesta' : 'Upravit cestu'}</h2><button data-act="save">Uložit</button></header>
-  ${chips.length ? `<div class="chips">${chips.join('')}</div>` : ''}
+  <header><button data-act="close">Zrušit</button><h2 style="text-align:center" id="sheetTitle"></h2><button data-act="save">Uložit</button></header>
+  <div class="seg">${[['', 'Cesta', ''], ...Object.entries(KINDS).map(([k, v]) => [k, v.label, v.sub])].map(([k, l, sub]) =>
+    `<button type="button" data-kind="${k || 'trip'}"${k ? ` class="k-${k}"` : ''}>${l}${sub ? `<small>${sub}</small>` : ''}</button>`).join('')}</div>
+  ${chips.length ? `<div class="trip-only"><div class="chips">${chips.join('')}</div></div>` : ''}
   <div class="card">
     <label>Datum</label><input type="hidden" id="f-date" value="${editing.date}">
     <div class="calnav"><button type="button" data-act="calPrev" aria-label="Předchozí měsíc">‹</button><b id="calLbl"></b><button type="button" data-act="calNext" aria-label="Další měsíc">›</button></div>
     <div id="calPick"></div>
     <div class="hint" id="dateHint"></div>
+    <div class="trip-only">
     <label>Východisko a místo ukončení cesty</label><input id="f-from" list="dl-from" value="${esc(editing.from)}">
     <label>Místo pracovního výkonu</label><input id="f-misto" list="dl-misto" value="${esc(editing.misto)}" placeholder="např. VD Rozkoš">
     <label>Účel cesty</label><textarea id="f-ucel" placeholder="např. kontrola objektu">${esc(editing.ucel)}</textarea>
@@ -241,11 +289,23 @@ function openEdit(trip, presetDate) {
     <div class="row"><div><label>Dopravní prostředek</label><input id="f-doprava" list="dl-doprava" value="${esc(editing.doprava)}"></div>
       <div><label>Měsíční záloha</label><input id="f-zaloha" value="${esc(editing.zaloha)}"></div></div>
     <label>Schvaluje</label><input id="f-schvaluje" list="dl-schvaluje" value="${esc(editing.schvaluje)}" placeholder="obvykle nechat prázdné (podpis)">
+    </div>
+    <div class="hint" id="offHint"></div>
   </div>
   ${['from', 'to', 'misto', 'spolu', 'doprava', 'schvaluje'].map(dl).join('')}
-  <button class="btn sec block" data-act="tpl">☆ Uložit jako šablonu</button>
-  ${isNew ? '' : '<button class="btn danger block" data-act="del">Smazat cestu</button>'}
-  <div class="hint">Šablona si pamatuje místo, účel, dobu, spolucestující a dopravu. Pak ji jedním ťuknutím použiješ nahoře.</div>`;
+  <div class="trip-only"><button class="btn sec block" data-act="tpl">☆ Uložit jako šablonu</button></div>
+  ${isNew ? '' : '<button class="btn danger block" data-act="del" id="delBtn"></button>'}
+  <div class="trip-only"><div class="hint">Šablona si pamatuje místo, účel, dobu, spolucestující a dopravu. Pak ji jedním ťuknutím použiješ nahoře.</div></div>`;
+  const setKind = k => {
+    editing.kind = KINDS[k] ? k : undefined;
+    const off = KINDS[editing.kind];
+    sh.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.kind === (editing.kind || 'trip')));
+    sh.querySelectorAll('.trip-only').forEach(x => x.hidden = !!off);
+    $('#sheetTitle').textContent = off ? off.label : isNew ? 'Nová cesta' : 'Upravit cestu';
+    $('#offHint').textContent = off ? 'Den volna se nepíše do výkazu cest, jen se započítá do Přehledu roku.' : '';
+    const bDel = $('#delBtn'); if (bDel) bDel.textContent = off ? 'Smazat volno' : 'Smazat cestu';
+  };
+  setKind(editing.kind);
   sh.classList.add('open');
   document.body.style.overflow = 'hidden';
   const upd = () => { const t = readEdit(); $('#dobaHint').textContent = ''; };
@@ -255,6 +315,7 @@ function openEdit(trip, presetDate) {
     const b = e.target.closest('button'); if (!b) return;
     if (b.dataset.tpl != null) return applyTpl(db.templates[+b.dataset.tpl]);
     if (b.dataset.day) return pickDay(b.dataset.day);
+    if (b.dataset.kind) return setKind(b.dataset.kind);
     const a = b.dataset.act;
     if (a === 'calPrev' || a === 'calNext') { pickMonth = shiftMonth(pickMonth, a === 'calPrev' ? -1 : 1); renderPicker(); }
     if (a === 'close') closeEdit();
@@ -285,7 +346,9 @@ function readEdit() {
   return t;
 }
 function saveEdit() {
-  const t = readEdit();
+  let t = readEdit();
+  // volno si nese jen datum a typ, cesta typ nemá
+  if (KINDS[t.kind]) t = { id: t.id, date: t.date, kind: t.kind }; else delete t.kind;
   if (!t.date) return toast('Vyber den v kalendáři');
   if (tripOnDate(t.date, t.id)) return toast(shortDate(t.date) + ' už je zapsaný, každý den jen jednou');
   const i = db.trips.findIndex(x => x.id === t.id);
