@@ -654,7 +654,7 @@ function renderSettings() {
   $('#bk').onclick = () => shareFiles([new File([JSON.stringify(db, null, 1)], `cestak-zaloha-${isoDate(new Date())}.json`, { type: 'application/json' })], 'Záloha Cesťáku');
   $('#rs').onchange = async e => {
     const f = e.target.files[0]; if (!f) return;
-    try { const d = JSON.parse(await f.text()); if (!Array.isArray(d.trips)) throw new Error('neplatný soubor'); db = d; db.settings = Object.assign({}, DEFAULT_SETTINGS, d.settings); db.templates ||= []; db.skipped ||= []; save(); toast('Obnoveno: ' + d.trips.length + ' cest'); render(); }
+    try { const d = JSON.parse(await f.text()); if (!Array.isArray(d.trips)) throw new Error('neplatný soubor'); db = d; db.settings = Object.assign({}, DEFAULT_SETTINGS, d.settings); db.templates ||= []; db.skipped ||= []; save(); toast('Obnoveno: ' + d.trips.length + ' ' + plural(d.trips.length, 'záznam', 'záznamy', 'záznamů')); render(); }
     catch (err) { toast('Chyba: ' + err.message); }
   };
 }
