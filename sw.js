@@ -1,4 +1,4 @@
-const C = 'cestak-v2';
+const C = 'cestak-v3';
 const FILES = ['./', 'index.html', 'app.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'icon-180.png',
   'fonts/Caveat.woff2', 'fonts/OoohBaby.woff2', 'fonts/BadScript.woff2', 'fonts/DancingScript.woff2', 'fonts/Comforter.woff2', 'fonts/Kalam.woff2'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(C).then(c => c.addAll(FILES))); self.skipWaiting(); });

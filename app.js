@@ -12,6 +12,7 @@ const FONTS = [
 ];
 const MONTHS = ['leden','únor','březen','duben','květen','červen','červenec','srpen','září','říjen','listopad','prosinec'];
 const WD = ['ne','po','út','st','čt','pá','so'];
+const WD_LONG = ['neděle','pondělí','úterý','středa','čtvrtek','pátek','sobota'];
 
 const DEFAULT_SETTINGS = {
   name: '', osobni: '', odbor: '',
@@ -62,6 +63,64 @@ function duration(t) {
 function routeText(t) { return (t.from || '').trim(); }
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 2200); }
 function tripsOf(mk) { return db.trips.filter(t => t.date.startsWith(mk)).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time)); }
+function shortDate(iso) { const d = parseDate(iso); return d.getDate() + '. ' + (d.getMonth() + 1) + '.'; }
+function longDate(iso) { const d = parseDate(iso); return WD_LONG[d.getDay()] + ' ' + shortDate(iso) + ' ' + d.getFullYear(); }
+// jiná cesta zapsaná na stejný den (každý den smí být v seznamu jen jednou)
+function tripOnDate(iso, exceptId) { return db.trips.find(t => t.date === iso && t.id !== exceptId); }
+
+/* ---------- státní svátky ČR ---------- */
+const HOLI_FIXED = {
+  '01-01': 'Den obnovy samostatného českého státu', '05-01': 'Svátek práce', '05-08': 'Den vítězství',
+  '07-05': 'Den slovanských věrozvěstů Cyrila a Metoděje', '07-06': 'Den upálení mistra Jana Husa',
+  '09-28': 'Den české státnosti', '10-28': 'Den vzniku samostatného československého státu',
+  '11-17': 'Den boje za svobodu a demokracii', '12-24': 'Štědrý den', '12-25': '1. svátek vánoční', '12-26': '2. svátek vánoční',
+};
+function easterSunday(y) { // anonymní gregoriánský algoritmus
+  const a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4;
+  const f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const n = h + l - 7 * m + 114;
+  return new Date(y, Math.floor(n / 31) - 1, (n % 31) + 1);
+}
+const holiCache = {};
+function holidays(y) {
+  if (holiCache[y]) return holiCache[y];
+  const out = {};
+  for (const [md, name] of Object.entries(HOLI_FIXED)) out[y + '-' + md] = name;
+  const e = easterSunday(y);
+  const add = (off, name) => { out[isoDate(new Date(y, e.getMonth(), e.getDate() + off))] = name; };
+  if (y >= 2016) add(-2, 'Velký pátek');
+  add(1, 'Velikonoční pondělí');
+  return (holiCache[y] = out);
+}
+function holidayName(iso) { return holidays(+iso.slice(0, 4))[iso] || ''; }
+function isOffDay(iso) { const wd = parseDate(iso).getDay(); return wd === 0 || wd === 6 || !!holidayName(iso); }
+
+/* ---------- kalendář ---------- */
+// zapsané dny = zeleně, víkendy a státní svátky = červeně, dnešek = modrý rámeček, vybraný den = plná modrá
+function calendarHtml(mk, { selected = '', exceptId = '' } = {}) {
+  const [y, m] = mk.split('-').map(Number);
+  const lead = (new Date(y, m - 1, 1).getDay() + 6) % 7, days = new Date(y, m, 0).getDate();
+  const taken = new Set(db.trips.filter(t => t.id !== exceptId).map(t => t.date));
+  const today = isoDate(new Date());
+  let h = '<div class="cal">' + ['po', 'út', 'st', 'čt', 'pá', 'so', 'ne'].map((d, i) => `<div class="cal-h${i > 4 ? ' off' : ''}">${d}</div>`).join('');
+  for (let i = 0; i < lead; i++) h += '<div></div>';
+  for (let d = 1; d <= days; d++) {
+    const iso = mk + '-' + pad(d), cls = ['cal-d'], hn = holidayName(iso);
+    if (isOffDay(iso)) cls.push('off');
+    if (taken.has(iso)) cls.push('rec');
+    if (iso === today) cls.push('today');
+    if (iso === selected) cls.push('sel');
+    const tip = [taken.has(iso) ? 'zapsáno' : '', hn].filter(Boolean).join(' · ');
+    h += `<button type="button" class="${cls.join(' ')}" data-day="${iso}"${tip ? ` title="${esc(tip)}"` : ''}>${d}</button>`;
+  }
+  return h + '</div>';
+}
+function calendarLegend(mk) {
+  const hs = Object.entries(holidays(+mk.slice(0, 4))).filter(([d]) => d.startsWith(mk)).sort(([a], [b]) => a.localeCompare(b));
+  return `<div class="cal-legend"><span><i class="rec"></i>zapsáno</span><span><i class="off"></i>víkend / státní svátek</span></div>`
+    + (hs.length ? `<div class="hint">${hs.map(([d, n]) => `${shortDate(d)} ${esc(n)}`).join(' · ')}</div>` : '');
+}
 
 /* ---------- tabs ---------- */
 let tab = 'list';
@@ -88,8 +147,8 @@ function render() {
 
 /* ---------- list ---------- */
 function todayMissing() {
-  const now = new Date(), d = isoDate(now), wd = now.getDay();
-  if (wd === 0 || wd === 6) return false;
+  const d = isoDate(new Date());
+  if (isOffDay(d)) return false;
   if (db.trips.some(t => t.date === d) || db.skipped.includes(d)) return false;
   return true;
 }
@@ -102,16 +161,23 @@ function renderList() {
       <button class="btn" id="bAdd">Zapsat</button><button class="btn sec" id="bSkip">Ne</button></div>`;
   }
   if (!S().name) h += `<div class="banner"><p>Nejdřív si v <b>Nastavení</b> vyplň jméno, osobní číslo a odbor. Předvyplní se do hlavičky.</p></div>`;
+  // starší data / obnovená záloha můžou mít jeden den vícekrát – upozornit, nic nemazat samo
+  const seen = new Set(), dup = new Set();
+  for (const t of list) { if (seen.has(t.date)) dup.add(t.date); seen.add(t.date); }
+  if (dup.size) h += `<div class="banner warn"><p><b>Den ${[...dup].map(shortDate).join(', ')} je zapsaný vícekrát.</b><br>Každý den může být v seznamu jen jednou. Jeden ze záznamů smaž, nebo mu změň datum.</p></div>`;
+  h += `<div class="card">${calendarHtml(viewMonth)}${calendarLegend(viewMonth)}</div>`;
   const pages = Math.max(1, Math.ceil(list.length / 15));
   h += `<div class="count">${list.length} ${list.length === 1 ? 'cesta' : list.length >= 2 && list.length <= 4 ? 'cesty' : 'cest'} · ${pages} ${pages === 1 ? 'list' : 'listy'} formuláře</div>`;
   if (!list.length) h += `<div class="card empty">V tomto měsíci zatím nic.<br>Přidej cestu tlačítkem +.</div>`;
   for (const t of list) {
     const d = parseDate(t.date);
-    h += `<div class="card trip" data-id="${t.id}"><div class="d">${d.getDate()}.${d.getMonth() + 1}.<small>${WD[d.getDay()]}</small></div>
+    h += `<div class="card trip${dup.has(t.date) ? ' dup' : ''}" data-id="${t.id}"><div class="d">${d.getDate()}.${d.getMonth() + 1}.<small>${WD[d.getDay()]}</small></div>
       <div class="b"><b>${esc(t.misto || '—')}</b><div>${esc(t.ucel || '')}</div><div>${esc([routeText(t), duration(t), t.doprava].filter(Boolean).join(' · '))}</div></div></div>`;
   }
   el.innerHTML = h;
   el.querySelectorAll('.trip').forEach(c => c.onclick = () => openEdit(db.trips.find(t => t.id === c.dataset.id)));
+  // ťuk na den v kalendáři: zapsaný den otevře jeho záznam, volný den založí novou cestu s tím datem
+  el.querySelectorAll('.cal-d').forEach(b => b.onclick = () => { const t = tripOnDate(b.dataset.day); t ? openEdit(t) : openEdit(null, b.dataset.day); });
   const ba = $('#bAdd'); if (ba) ba.onclick = () => openEdit(null);
   const bs = $('#bSkip'); if (bs) bs.onclick = () => { db.skipped.push(isoDate(new Date())); db.skipped = db.skipped.slice(-60); save(); render(); };
 }
@@ -123,19 +189,34 @@ function suggestions(field) {
   for (const t of db.trips) { const v = (t[field] || '').trim(); if (v) m.set(v, (m.get(v) || 0) + 1); }
   return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 30).map(x => x[0]);
 }
-function newTrip() {
+function newTrip(preset) {
   const s = S();
-  let date = isoDate(new Date());
+  let date = preset || isoDate(new Date());
   if (!date.startsWith(viewMonth)) date = viewMonth + '-01';
+  if (tripOnDate(date)) date = ''; // den už je zapsaný → nechat vybrat v kalendáři
   return { id: uid(), date, time: s.defTime, end: s.defEnd, from: s.origin, to: s.origin, misto: '', ucel: '', spolu: s.defSpolu, doba: s.defDoba, doprava: s.defTransport, zaloha: '', schvaluje: s.defSchvaluje };
 }
 const FIELDS = [
   ['misto', 'Místo pracovního výkonu'], ['ucel', 'Účel cesty'], ['spolu', 'Spolucestující'],
   ['doprava', 'Dopravní prostředek'], ['zaloha', 'Měsíční záloha'], ['schvaluje', 'Schvaluje'],
 ];
-function openEdit(trip) {
+let pickMonth = viewMonth;
+function renderPicker() {
+  const sel = $('#f-date').value;
+  $('#calLbl').textContent = monthLabel(pickMonth);
+  $('#calPick').innerHTML = calendarHtml(pickMonth, { selected: sel, exceptId: editing.id }) + calendarLegend(pickMonth);
+  const hn = sel && holidayName(sel);
+  $('#dateHint').textContent = sel ? longDate(sel) + (hn ? ' · ' + hn : '') : 'Vyber den v kalendáři.';
+}
+function pickDay(iso) {
+  if (tripOnDate(iso, editing.id)) return toast(shortDate(iso) + ' už je zapsaný');
+  $('#f-date').value = iso;
+  renderPicker();
+}
+function openEdit(trip, presetDate) {
   const isNew = !trip;
-  editing = isNew ? newTrip() : { ...trip };
+  editing = isNew ? newTrip(presetDate) : { ...trip };
+  pickMonth = editing.date ? editing.date.slice(0, 7) : viewMonth;
   const sh = $('#editSheet');
   const chips = [];
   const lt = lastTrip();
@@ -146,7 +227,10 @@ function openEdit(trip) {
   <header><button data-act="close">Zrušit</button><h2 style="text-align:center">${isNew ? 'Nová cesta' : 'Upravit cestu'}</h2><button data-act="save">Uložit</button></header>
   ${chips.length ? `<div class="chips">${chips.join('')}</div>` : ''}
   <div class="card">
-    <div class="row"><div><label>Datum</label><input type="date" id="f-date" value="${editing.date}"></div></div>
+    <label>Datum</label><input type="hidden" id="f-date" value="${editing.date}">
+    <div class="calnav"><button type="button" data-act="calPrev" aria-label="Předchozí měsíc">‹</button><b id="calLbl"></b><button type="button" data-act="calNext" aria-label="Další měsíc">›</button></div>
+    <div id="calPick"></div>
+    <div class="hint" id="dateHint"></div>
     <label>Východisko a místo ukončení cesty</label><input id="f-from" list="dl-from" value="${esc(editing.from)}">
     <label>Místo pracovního výkonu</label><input id="f-misto" list="dl-misto" value="${esc(editing.misto)}" placeholder="např. VD Rozkoš">
     <label>Účel cesty</label><textarea id="f-ucel" placeholder="např. kontrola objektu">${esc(editing.ucel)}</textarea>
@@ -166,10 +250,13 @@ function openEdit(trip) {
   document.body.style.overflow = 'hidden';
   const upd = () => { const t = readEdit(); $('#dobaHint').textContent = ''; };
   $('#f-doba', sh).addEventListener('input', upd); upd();
+  renderPicker();
   sh.onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     if (b.dataset.tpl != null) return applyTpl(db.templates[+b.dataset.tpl]);
+    if (b.dataset.day) return pickDay(b.dataset.day);
     const a = b.dataset.act;
+    if (a === 'calPrev' || a === 'calNext') { pickMonth = shiftMonth(pickMonth, a === 'calPrev' ? -1 : 1); renderPicker(); }
     if (a === 'close') closeEdit();
     if (a === 'last') applyTpl(lastTrip());
     if (a === 'save') saveEdit();
@@ -199,7 +286,8 @@ function readEdit() {
 }
 function saveEdit() {
   const t = readEdit();
-  if (!t.date) return toast('Vyplň datum');
+  if (!t.date) return toast('Vyber den v kalendáři');
+  if (tripOnDate(t.date, t.id)) return toast(shortDate(t.date) + ' už je zapsaný, každý den jen jednou');
   const i = db.trips.findIndex(x => x.id === t.id);
   if (i >= 0) db.trips[i] = t; else db.trips.push(t);
   save();
